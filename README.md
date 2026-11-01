@@ -22,6 +22,16 @@ To change modes, hold **P1 UL + P2 UL + TEST** and release. The board detaches f
 saves the new mode, and re-attaches about half a second later in the new mode (no re-plug needed).
 With WS2812 enabled, the LED at the mode's index lights white after a change.
 
+## LXIO protocol notes
+Reverse engineered from the Phoenix 2.12 executable. The full byte/bit map is in `true_lxio_structs.h`.
+ - The game opens the LXIO with a statically linked hidapi (libusb backend), trying `0d2f:1020` and then `0d2f:1040`.
+   hidapi ignores devices whose `bDeviceClass` isn't 0, so the LXIO descriptors must keep it at 0.
+ - Each 16-byte OUT report carries PIUIO lamp bytes 0..3 (without mux bits) and the front-button lamps (bytes 4, 5).
+   Each 16-byte IN report carries 4 sensor bytes per player, the test/service/coin/clear byte (8), coin 2 (9) and the front buttons (10, 11).
+ - When an LXIO is found, the game's IO thread runs at 200 Hz. Each tick it writes one OUT report and reads **one** queued IN report, waiting at most 1 ms.
+   hidapi keeps up to 30 reports queued, so the firmware answers each OUT report with exactly one IN report instead of sending one every 1 ms
+   (sending every 1 ms would leave the game reading data about 30 ms old).
+
 ## Hardware Setup
 You don't need many components to put one together:
  - Raspberry Pi Pico

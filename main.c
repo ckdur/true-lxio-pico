@@ -63,6 +63,25 @@ struct lampArray lamp = {};
 uint8_t LXInputData[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t LXLampData[16] = {};
 
+// LXIO input report pacing (see true_lxio_structs.h).
+// The game's hidapi read thread queues every IN report we send (up to 30) and the
+// game pops exactly ONE per IO tick (200 Hz), right after writing its OUT report.
+// Streaming at the 1 ms poll rate fills that queue and the game then always reads
+// ~30 reports old data. So, like a request/response device, we answer every OUT
+// report with exactly one IN report. Only while the host is not writing at all
+// (before its first OUT, or a read-only host) we report on input changes instead.
+// If a reply is collected after the game's 1 ms read timeout it stays queued, and
+// the game would be one report behind forever. When that happens we skip the next
+// reply so the game drains it (worst case it repeats the previous input once).
+#define LX_HOST_IDLE_MS 1000
+#define LX_LATE_REPLY_US 900
+static bool lx_reply_pending = false;
+static bool lx_reply_in_flight = false;
+static bool lx_skip_next_reply = false;
+static bool lx_host_writes = false;
+static absolute_time_t lx_last_out;
+static uint8_t lx_last_sent[16];
+
 bool tud_vendor_control_xfer_cb_piuio(uint8_t rhport, uint8_t stage, tusb_control_request_t const * request) {
     // Request 0xAE = IO Time
     if (request->bRequest == 0xAE) {
@@ -192,6 +211,22 @@ static uint16_t build_hid_report(uint8_t* buf, uint16_t maxlen) {
 
 void tud_mount_cb(void) {
     lastSentPad = 0xFFFF;
+    lx_reply_pending = false;
+    lx_reply_in_flight = false;
+    lx_skip_next_reply = false;
+    lx_host_writes = false;
+    // The game starts assuming everything released (0xFF), so nothing needs to be
+    // queued at connection time unless something is actually pressed
+    memset(lx_last_sent, 0xFF, sizeof(lx_last_sent));
+}
+
+// Send one LX input report with the freshest input. Returns false if the IN endpoint is busy.
+static bool lx_send_report(void) {
+    if (!tud_hid_n_ready(0)) return false;
+    handle_lxio_data();
+    if (!tud_hid_n_report(0, 0, LXInputData, 16)) return false;
+    memcpy(lx_last_sent, LXInputData, 16);
+    return true;
 }
 
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_t len) {
@@ -201,6 +236,11 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_
     // Get the LX data
     len = len > 16 ? 16 : len;
     //memcpy(report, LXInputData, len);
+    if (lx_reply_in_flight) {
+        lx_reply_in_flight = false;
+        if (absolute_time_diff_us(lx_last_out, get_absolute_time()) > LX_LATE_REPLY_US)
+            lx_skip_next_reply = true;
+    }
     handle_lxio_data();
 }
 
@@ -209,13 +249,26 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
     // This example doesn't use multiple report and report ID
     (void) itf;
     (void) report_id;
-    (void) report_type;
     if (!MODE_IS_LXIO(piuio_which_device)) return; // Keyboard LEDs etc. are ignored
 
     // Get the LX data
     bufsize = bufsize > 16 ? 16 : bufsize;
     memcpy(LXLampData, buffer, bufsize);
     handle_lxio_data();
+
+    // Only OUT reports (interrupt OUT or SET_REPORT(Output)) are a poll from the game
+    if (report_type == HID_REPORT_TYPE_OUTPUT || report_type == HID_REPORT_TYPE_INVALID) {
+        lx_host_writes = true;
+        lx_last_out = get_absolute_time();
+        if (lx_skip_next_reply) {
+            lx_skip_next_reply = false;
+            lx_reply_pending = false;
+            return;
+        }
+        // Answer right away: the game only waits 1 ms for the input report
+        lx_reply_pending = !lx_send_report();
+        lx_reply_in_flight = !lx_reply_pending;
+    }
 }
 
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t* buffer, uint16_t reqlen)
@@ -238,9 +291,18 @@ void hid_task(void) {
   if(!tud_hid_n_ready(0)) return;
 
   if (MODE_IS_LXIO(piuio_which_device)) {
-    // LXIO streams its input continuously
-    handle_lxio_data();
-    tud_hid_n_report(0, 0, LXInputData, 16);
+    if (lx_host_writes && absolute_time_diff_us(lx_last_out, get_absolute_time()) > LX_HOST_IDLE_MS * 1000)
+      lx_host_writes = false; // Host stopped polling us
+
+    if (lx_reply_pending) {
+      // Reply to an OUT report that arrived while the IN endpoint was busy
+      if (lx_send_report()) { lx_reply_pending = false; lx_reply_in_flight = true; }
+    }
+    else if (!lx_host_writes) {
+      // Host is not polling: report only changes, so its queue never fills up
+      handle_lxio_data();
+      if (memcmp(lx_last_sent, LXInputData, 16) != 0) lx_send_report();
+    }
   }
   else if (padPressed != lastSentPad) {
     // Keyboard / Joystick only report on changes

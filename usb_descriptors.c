@@ -64,7 +64,7 @@ tusb_desc_device_t const desc_device_piuio =
 
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
-    .iSerialNumber      = 0x03,
+    .iSerialNumber      = 0x00, // No serial string is defined
 
     .bNumConfigurations = 0x01
 };
@@ -75,20 +75,21 @@ tusb_desc_device_t const desc_device_lxiov1 =
     .bDescriptorType    = TUSB_DESC_DEVICE,
     .bcdUSB             = 0x0110,
 
-    // Use Interface Association Descriptor (IAD) for CDC
-    // As required by USB Specs IAD's subclass must be common class (2) and protocol must be IAD (1)
-    .bDeviceClass       = 0xFF,
+    // MUST be 0 (class defined per interface). The game opens the LXIO through a
+    // statically linked hidapi (libusb backend), whose hid_enumerate() skips every
+    // device whose bDeviceClass != LIBUSB_CLASS_PER_INTERFACE.
+    .bDeviceClass       = 0x00,
     .bDeviceSubClass    = 0x00,
     .bDeviceProtocol    = 0x00,
-    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE, // TODO: Maybe is better to put 8?
+    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE, // Original is 16, the game does not care
 
     .idVendor           = 0x0d2f,
     .idProduct          = 0x1020,
-    .bcdDevice          = 0x0001,
+    .bcdDevice          = 0x0100,
 
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
-    .iSerialNumber      = 0x03,
+    .iSerialNumber      = 0x00, // Original has no serial string
 
     .bNumConfigurations = 0x01
 };
@@ -99,20 +100,21 @@ tusb_desc_device_t const desc_device_lxiov2 =
     .bDescriptorType    = TUSB_DESC_DEVICE,
     .bcdUSB             = 0x0110,
 
-    // Use Interface Association Descriptor (IAD) for CDC
-    // As required by USB Specs IAD's subclass must be common class (2) and protocol must be IAD (1)
-    .bDeviceClass       = 0xFF,
+    // MUST be 0 (class defined per interface). The game opens the LXIO through a
+    // statically linked hidapi (libusb backend), whose hid_enumerate() skips every
+    // device whose bDeviceClass != LIBUSB_CLASS_PER_INTERFACE.
+    .bDeviceClass       = 0x00,
     .bDeviceSubClass    = 0x00,
     .bDeviceProtocol    = 0x00,
-    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE, // TODO: Maybe is better to put 8?
+    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE, // Original is 16, the game does not care
 
     .idVendor           = 0x0d2f,
     .idProduct          = 0x1040,
-    .bcdDevice          = 0x0001,
+    .bcdDevice          = 0x0100,
 
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
-    .iSerialNumber      = 0x03,
+    .iSerialNumber      = 0x00, // Original has no serial string
 
     .bNumConfigurations = 0x01
 };
