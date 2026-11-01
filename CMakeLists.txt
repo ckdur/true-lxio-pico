@@ -38,10 +38,14 @@ target_link_libraries(true_lxio_pico
                       hardware_pio
                       hardware_dma
                       hardware_irq
-                      hardware_flash)
+                      hardware_flash
+                      pico_flash)
 
 if(ENABLE_WS2812_SUPPORT)
     target_compile_definitions(true_lxio_pico PRIVATE ENABLE_WS2812_SUPPORT=1)
+else()
+    # Core 1 is never launched, so flash_safe_execute doesn't need to lock it out
+    target_compile_definitions(true_lxio_pico PRIVATE PICO_FLASH_ASSUME_CORE1_SAFE=1)
 endif()
 
 if(WS2812_IS_RGBW)

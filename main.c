@@ -10,9 +10,13 @@
 #include "hardware/sync.h"
 #include "class/hid/hid.h"
 #include "class/hid/hid_device.h"
+#include "pico/flash.h"
 
 #ifdef ENABLE_WS2812_SUPPORT
 #include "true_lxio_ws2812.h"
+#else
+unsigned char inactive = 1;
+unsigned char dev_changed = 0;
 #endif
 
 #define FLASH_TARGET_OFFSET (512 * 1024) // choosing to start at 512K
@@ -24,21 +28,23 @@ struct MyData {
 
 struct MyData myData;
 
+static void saveMyDataUnsafe(void* param) {
+    (void) param;
+    // flash_range_program needs a whole page as source
+    static uint8_t page[FLASH_PAGE_SIZE];
+    memset(page, 0xFF, sizeof(page));
+    memcpy(page, &myData, sizeof(myData));
+
+    flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
+    flash_range_program(FLASH_TARGET_OFFSET, page, FLASH_PAGE_SIZE);
+}
+
 void saveMyData() {
-    uint8_t* myDataAsBytes = (uint8_t*) &myData;
-    int myDataSize = sizeof(myData);
-    
-    int writeSize = (myDataSize / FLASH_PAGE_SIZE) + 1; // how many flash pages we're gonna need to write
-    int sectorCount = ((writeSize * FLASH_PAGE_SIZE) / FLASH_SECTOR_SIZE) + 1; // how many flash sectors we're gonna need to erase
-        
-    printf("Programming flash target region...\n");
-
-    uint32_t interrupts = save_and_disable_interrupts();
-    flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE * sectorCount);
-    flash_range_program(FLASH_TARGET_OFFSET, myDataAsBytes, FLASH_PAGE_SIZE * writeSize);
-    restore_interrupts(interrupts);
-
-    printf("Done.\n");
+    // Skip the erase/program if nothing changed (saves flash wear)
+    if (memcmp((const void*)(XIP_BASE + FLASH_TARGET_OFFSET), &myData, sizeof(myData)) == 0) return;
+    // Core 1 (WS2812) also runs from flash, so it must be locked out while the
+    // flash is being erased/programmed. flash_safe_execute does that for us.
+    flash_safe_execute(saveMyDataUnsafe, NULL, 100);
 }
 
 void readBackMyData() {
@@ -82,7 +88,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
     // nothing to with DATA & ACK stage
     if (stage != CONTROL_STAGE_SETUP) return true;
 
-    if (piuio_which_device == 0) 
+    if (piuio_which_device == MODE_PIUIO)
         return tud_vendor_control_xfer_cb_piuio(rhport, stage, request);
     
     else
@@ -142,8 +148,55 @@ void tud_vendor_tx_cb(uint8_t itf, uint32_t sent_bytes) {
     // Not implemented, but maybe is necessary
 }
 
+// Keyboard / Joystick state
+// Pad switch bitmap: bit i = pinSwitch[i] pressed (P1 DL,UL,CN,UR,DR, P2 DL,UL,CN,UR,DR)
+static uint16_t padPressed = 0;
+static uint16_t lastSentPad = 0xFFFF; // Force a first report after (re)connecting
+
+// Left pad: Q E S Z C, right pad: numpad 7 9 5 1 3 (ordered as pinSwitch)
+static const uint8_t kbKeymap[10] = {
+    HID_KEY_Z,       // P1 DL
+    HID_KEY_Q,       // P1 UL
+    HID_KEY_S,       // P1 CN
+    HID_KEY_E,       // P1 UR
+    HID_KEY_C,       // P1 DR
+    HID_KEY_KEYPAD_1, // P2 DL
+    HID_KEY_KEYPAD_7, // P2 UL
+    HID_KEY_KEYPAD_5, // P2 CN
+    HID_KEY_KEYPAD_9, // P2 UR
+    HID_KEY_KEYPAD_3, // P2 DR
+};
+
+static uint16_t build_hid_report(uint8_t* buf, uint16_t maxlen) {
+    if (piuio_which_device == MODE_KEYBOARD) {
+        uint8_t report[KB_REPORT_LEN] = {0};
+        int n = 2;
+        for (int i = 0; i < 10 && n < KB_REPORT_LEN; i++)
+            if (padPressed & (1u << i)) report[n++] = kbKeymap[i];
+        uint16_t len = maxlen < KB_REPORT_LEN ? maxlen : KB_REPORT_LEN;
+        memcpy(buf, report, len);
+        return len;
+    }
+    if (piuio_which_device == MODE_JOYSTICK) {
+        uint8_t report[JOY_REPORT_LEN] = {
+            (uint8_t)(padPressed & 0xFF),
+            (uint8_t)((padPressed >> 8) & 0x03),
+            0, 0 // X, Y centered
+        };
+        uint16_t len = maxlen < JOY_REPORT_LEN ? maxlen : JOY_REPORT_LEN;
+        memcpy(buf, report, len);
+        return len;
+    }
+    return 0;
+}
+
+void tud_mount_cb(void) {
+    lastSentPad = 0xFFFF;
+}
+
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_t len) {
     (void) instance;
+    if (!MODE_IS_LXIO(piuio_which_device)) return;
 
     // Get the LX data
     len = len > 16 ? 16 : len;
@@ -157,6 +210,7 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
     (void) itf;
     (void) report_id;
     (void) report_type;
+    if (!MODE_IS_LXIO(piuio_which_device)) return; // Keyboard LEDs etc. are ignored
 
     // Get the LX data
     bufsize = bufsize > 16 ? 16 : bufsize;
@@ -170,7 +224,7 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
     (void) report_id;
     (void) report_type;
     (void) buffer;
-    (void) reqlen;
+    if (!MODE_IS_LXIO(piuio_which_device)) return build_hid_report(buffer, reqlen);
 
     // Put the LX data
     handle_lxio_data();
@@ -180,13 +234,19 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
 }
 
 void hid_task(void) {
-  if(piuio_which_device == 0) return; // Dont do this on PIUIO
-  // Just do the sendings
+  if(!MODE_IS_HID(piuio_which_device)) return; // Dont do this on PIUIO
+  if(!tud_hid_n_ready(0)) return;
 
-  if ( tud_hid_n_ready(0) )
-  {
+  if (MODE_IS_LXIO(piuio_which_device)) {
+    // LXIO streams its input continuously
     handle_lxio_data();
     tud_hid_n_report(0, 0, LXInputData, 16);
+  }
+  else if (padPressed != lastSentPad) {
+    // Keyboard / Joystick only report on changes
+    uint8_t report[16];
+    uint16_t len = build_hid_report(report, sizeof(report));
+    if (tud_hid_n_report(0, 0, report, len)) lastSentPad = padPressed;
   }
 }
 
@@ -196,12 +256,43 @@ static int prev_switch;
 static int prev_switch_state;
 static int switch_notif = 0;
 
+// On-the-fly mode switching: detach from the bus, save the new mode, wait
+// long enough for the host to notice the detach, then re-attach so the host
+// enumerates the new descriptors. No physical re-plug needed.
+#define USB_RECONNECT_DELAY_MS 500
+static bool reconnect_pending = false;
+static absolute_time_t reconnect_time;
+
+// How long the WS2812 shows the selected mode before returning to normal lamps
+#define MODE_INDICATOR_MS 3000
+static absolute_time_t mode_indicator_end;
+
 void go_next_device(void) {
+    if (reconnect_pending) return;
     dev_changed = 1;
+    mode_indicator_end = make_timeout_time_ms(MODE_INDICATOR_MS);
     next_device++;
-    if(next_device >= 3) next_device = 0;
+    if(next_device >= MODE_COUNT) next_device = 0;
+
+    tud_disconnect();
+
+    // Flash write happens while detached, so stalling interrupts can't upset the host
     myData.which = next_device;
     saveMyData();
+
+    reconnect_time = make_timeout_time_ms(USB_RECONNECT_DELAY_MS);
+    reconnect_pending = true;
+}
+
+void reconnect_task(void) {
+    if (dev_changed && !reconnect_pending && time_reached(mode_indicator_end)) dev_changed = 0;
+    if (!reconnect_pending || !time_reached(reconnect_time)) return;
+    // Descriptors/callbacks follow piuio_which_device, so only swap it while detached
+    piuio_which_device = next_device;
+    memset(lamp.data, 0, sizeof(lamp.data));
+    lastSentPad = 0xFFFF;
+    reconnect_pending = false;
+    tud_connect();
 }
 
 static struct lampArray prevLamp = {};
@@ -263,6 +354,12 @@ void piuio_task(void) {
     now = get_absolute_time();
     #endif
 
+    // Raw pad bitmap for Keyboard / Joystick
+    uint16_t pressed = 0;
+    for (int i = 0; i < 10; i++)
+        if(pinSwitch[i] != 255 && !gpio_get(pinSwitch[i])) pressed |= (1u << i);
+    padPressed = pressed;
+
     // P1 / P2 inputs
     memset(procInputData, 0xFF, 8);
     for (int i = 0; i < 5; i++) {
@@ -280,6 +377,12 @@ void piuio_task(void) {
 
     for(int i =0; i < 8; i++) {
         inputData[i] = procInputData[i];
+    }
+
+    // Keyboard / Joystick have no host-driven lamps: light each pad while pressed
+    if(piuio_which_device == MODE_KEYBOARD || piuio_which_device == MODE_JOYSTICK) {
+        lamp.data[PLAYER_1] = (uint8_t)((~procInputData[PLAYER_1] & 0x1F) << 2);
+        lamp.data[PLAYER_2] = (uint8_t)((~procInputData[PLAYER_2] & 0x1F) << 2);
     }
 
     // Write pad lamps
@@ -333,7 +436,7 @@ int main(void) {
     readBackMyData();
 
     piuio_which_device = (int)myData.which;
-    if(piuio_which_device < 0 || piuio_which_device > 2) piuio_which_device = 1;
+    if(piuio_which_device < 0 || piuio_which_device >= MODE_COUNT) piuio_which_device = MODE_LXIOV1;
     next_device = piuio_which_device;
 
     // Init WS2812B
@@ -374,6 +477,7 @@ int main(void) {
         tud_task(); // tinyusb device task
         piuio_task();
         change_dev_task();
+        reconnect_task();
         hid_task();
     }
 

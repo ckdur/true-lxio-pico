@@ -7,6 +7,7 @@
 
 #include "ws2812.pio.h"
 #include "pico/multicore.h"
+#include "pico/flash.h"
 
 mutex_t mutex;
 semaphore_t sem;
@@ -40,6 +41,7 @@ void ws2812_update() {
         put_pixel(next_device == 4 ? urgb_u32(255, 255, 255) : urgb_u32(0, 0, 0));
         put_pixel(next_device == 5 ? urgb_u32(255, 255, 255) : urgb_u32(0, 0, 0));
     }
+    else
 #ifdef ENABLE_DEMO
     if(inactive) {
         for (int i = 0; i < 6; i++) {
@@ -63,6 +65,8 @@ void ws2812_update() {
 }
 
 void ws2812_core1() {
+    // Allow core 0 to pause this core while it writes the flash (mode save)
+    flash_safe_execute_core_init();
     while (true) {
         ws2812_lock_mtx();
         ws2812_update();

@@ -7,6 +7,21 @@ The build is aimed to switch the PIUIO and the LXIOv1/2 by the pusing of a butto
 The original [piuio-pico](https://github.com/48productions/piuio-pico) is originally designed for [dj505's PicoFX handpump controller](https://github.com/dj505/PicoFX).
 This repository will continue the original design, only changing the protocol and descriptors.
 
+## Modes
+The board can act as one of the following devices. The selected mode is saved in the internal flash.
+
+| Mode | VID:PID | Notes |
+|------|---------|-------|
+| PIUIO | `0547:1002` | Vendor control transfers |
+| LXIOv1 | `0d2f:1020` | HID, 16-byte reports |
+| LXIOv2 | `0d2f:1040` | HID, 16-byte reports |
+| Keyboard | `cafe:4c01` | Left pad `Q E S Z C`, right pad numpad `7 9 5 1 3` (needs NumLock on) |
+| Joystick | `cafe:4c02` | 10 buttons (P1 DL,UL,CN,UR,DR = 1-5, P2 = 6-10) |
+
+To change modes, hold **P1 UL + P2 UL + TEST** and release. The board detaches from USB,
+saves the new mode, and re-attaches about half a second later in the new mode (no re-plug needed).
+With WS2812 enabled, the LED at the mode's index lights white after a change.
+
 ## Hardware Setup
 You don't need many components to put one together:
  - Raspberry Pi Pico

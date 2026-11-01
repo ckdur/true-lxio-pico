@@ -34,6 +34,26 @@ enum
     REPORT_ID_COUNT
 };
 
+// Device modes. Order defines the cycling order of the mode-switch combo.
+enum
+{
+    MODE_PIUIO = 0,
+    MODE_LXIOV1,
+    MODE_LXIOV2,
+    MODE_KEYBOARD,
+    MODE_JOYSTICK,
+    MODE_COUNT
+};
+
+#define MODE_IS_LXIO(m) ((m) == MODE_LXIOV1 || (m) == MODE_LXIOV2)
+#define MODE_IS_HID(m)  ((m) != MODE_PIUIO)
+
+// Keyboard report: modifier, reserved, then up to KB_REPORT_KEYS keycodes
+#define KB_REPORT_KEYS  10
+#define KB_REPORT_LEN   (2 + KB_REPORT_KEYS)
+// Joystick report: 10 buttons (2 bytes, padded), X, Y (centered)
+#define JOY_REPORT_LEN  4
+
 extern int piuio_which_device;
 
 #define EPNUM_VENDOR_IN_LXIO 0x01
